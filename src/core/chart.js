@@ -3,6 +3,7 @@
  */
 import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, safeString, requireFinite } from '../connection.js';
 import { waitForChartReady as _waitForChartReady } from '../wait.js';
+import https from 'node:https';
 
 const CHART_API = 'window.TradingViewApi._activeChartWidgetWV.value()';
 
@@ -225,11 +226,35 @@ export async function symbolSearch({ query, type }) {
     domain: 'production',
   });
 
-  const resp = await fetch(`https://symbol-search.tradingview.com/symbol_search/v3/?${params}`, {
-    headers: { 'Origin': 'https://www.tradingview.com', 'Referer': 'https://www.tradingview.com/' },
+  // node:https en vez de fetch() a propósito: fetch() usa el pool de
+  // conexiones de undici, que en Windows corre su limpieza en un worker
+  // thread — ese thread puede perder la carrera contra el process.exit(0)
+  // que dispara el CLI apenas el handler resuelve (ver router.js), y el
+  // runtime crashea con "Assertion failed: !(handle->flags &
+  // UV_HANDLE_CLOSING)" en vez de devolver el resultado. Bug real y
+  // documentado de Node en Windows (nodejs/node#56645, #58091, #64322) —
+  // un delay no lo resuelve porque el race es entre threads distintos.
+  // node:https no tiene ese pool en worker thread, así que evita el bug.
+  const data = await new Promise((resolve, reject) => {
+    https.get(
+      `https://symbol-search.tradingview.com/symbol_search/v3/?${params}`,
+      { headers: { 'Origin': 'https://www.tradingview.com', 'Referer': 'https://www.tradingview.com/' } },
+      (res) => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          res.resume();
+          reject(new Error(`Symbol search API returned ${res.statusCode}`));
+          return;
+        }
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => {
+          try { resolve(JSON.parse(body)); }
+          catch (err) { reject(new Error(`Failed to parse symbol search response: ${err.message}`)); }
+        });
+      }
+    ).on('error', reject);
   });
-  if (!resp.ok) throw new Error(`Symbol search API returned ${resp.status}`);
-  const data = await resp.json();
 
   const strip = s => (s || '').replace(/<\/?em>/g, '');
   const results = (data.symbols || data || []).slice(0, 15).map(r => ({
