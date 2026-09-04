@@ -4,10 +4,22 @@
 import { evaluate, evaluateAsync, getClient, safeString } from '../connection.js';
 
 export async function create({ condition, price, message }) {
+  // [data-name="alerts"] NO es el boton de crear alerta — es el toggle del
+  // panel de alertas EXISTENTES (confirmado en vivo, aparece como aria-label
+  // "Alertas" en .widgetbar-tabs). Clickearlo abre la lista, no el dialogo
+  // de creacion, y por eso "inputs" quedaba vacio despues. El boton real
+  // dice "Crear alerta" en español (o "Create Alert" en ingles) — buscamos
+  // por texto visible ya que no tiene un aria-label/data-name fijo conocido.
   const opened = await evaluate(`
     (function() {
-      var btn = document.querySelector('[aria-label="Create Alert"]')
-        || document.querySelector('[data-name="alerts"]');
+      var btn = document.querySelector('[aria-label="Create Alert"]');
+      if (!btn) {
+        var buttons = document.querySelectorAll('button');
+        for (var i = 0; i < buttons.length; i++) {
+          var txt = buttons[i].textContent.trim();
+          if (/^(create alert|crear alerta)$/i.test(txt)) { btn = buttons[i]; break; }
+        }
+      }
       if (btn) { btn.click(); return true; }
       return false;
     })()
@@ -21,23 +33,33 @@ export async function create({ condition, price, message }) {
 
   await new Promise(r => setTimeout(r, 1000));
 
+  // [class*="alert"] nunca matcheaba nada real — confirmado en vivo via
+  // DevTools: el input de precio usa clases generadas tipo
+  // "input-H0xdCnFS size-small-H0xdCnFS" (CSS modules con hash), sin
+  // "alert" en ningun lado. Con el dialogo de crear alerta abierto, ese
+  // input de precio (ya viene precargado con el valor actual, formato
+  // "4.471,72") es el UNICO input de texto/numero visible en toda la
+  // pagina — por eso ahora buscamos sin scopear a [class*="alert"].
   const priceSet = await evaluate(`
     (function() {
-      var inputs = document.querySelectorAll('[class*="alert"] input[type="text"], [class*="alert"] input[type="number"]');
-      for (var i = 0; i < inputs.length; i++) {
-        var label = inputs[i].closest('[class*="row"]')?.querySelector('[class*="label"]');
-        if (label && /value|price/i.test(label.textContent)) {
+      var inputs = document.querySelectorAll('input[type="text"]:not([readonly]), input[type="number"]');
+      var visibles = [];
+      for (var i = 0; i < inputs.length; i++) { if (inputs[i].offsetParent !== null) visibles.push(inputs[i]); }
+      for (var i = 0; i < visibles.length; i++) {
+        var label = visibles[i].closest('[class*="row"]')?.querySelector('[class*="label"]');
+        if (label && /value|price|valor|precio/i.test(label.textContent)) {
           var nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-          nativeSet.call(inputs[i], ${safeString(String(price))});
-          inputs[i].dispatchEvent(new Event('input', { bubbles: true }));
-          inputs[i].dispatchEvent(new Event('change', { bubbles: true }));
+          nativeSet.call(visibles[i], ${safeString(String(price))});
+          visibles[i].dispatchEvent(new Event('input', { bubbles: true }));
+          visibles[i].dispatchEvent(new Event('change', { bubbles: true }));
           return true;
         }
       }
-      if (inputs.length > 0) {
+      if (visibles.length > 0) {
         var nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-        nativeSet.call(inputs[0], ${safeString(String(price))});
-        inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
+        nativeSet.call(visibles[0], ${safeString(String(price))});
+        visibles[0].dispatchEvent(new Event('input', { bubbles: true }));
+        visibles[0].dispatchEvent(new Event('change', { bubbles: true }));
         return true;
       }
       return false;
@@ -45,10 +67,13 @@ export async function create({ condition, price, message }) {
   `);
 
   if (message) {
+    // Mismo problema que el input de precio: [class*="alert"] no matchea
+    // nada real. Buscamos el primer textarea visible sin scopear.
     await evaluate(`
       (function() {
-        var textarea = document.querySelector('[class*="alert"] textarea')
-          || document.querySelector('textarea[placeholder*="message"]');
+        var textareas = document.querySelectorAll('textarea');
+        var textarea = null;
+        for (var i = 0; i < textareas.length; i++) { if (textareas[i].offsetParent !== null) { textarea = textareas[i]; break; } }
         if (textarea) {
           var nativeSet = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
           nativeSet.call(textarea, ${JSON.stringify(message)});
@@ -59,11 +84,12 @@ export async function create({ condition, price, message }) {
   }
 
   await new Promise(r => setTimeout(r, 500));
+  // Boton real confirmado en vivo: "Crear" (español), no "Create".
   const created = await evaluate(`
     (function() {
       var btns = document.querySelectorAll('button[data-name="submit"], button');
       for (var i = 0; i < btns.length; i++) {
-        if (/^create$/i.test(btns[i].textContent.trim())) { btns[i].click(); return true; }
+        if (/^(create|crear)$/i.test(btns[i].textContent.trim())) { btns[i].click(); return true; }
       }
       return false;
     })()

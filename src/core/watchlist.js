@@ -66,11 +66,29 @@ export async function add({ symbol }) {
   // Use keyboard shortcut to open symbol search in watchlist, type symbol, press Enter
   const c = await getClient();
 
-  // First ensure watchlist panel is open
+  // First ensure watchlist panel is open. Chequeamos primero si el panel ya
+  // esta visible en el DOM (data-name="widgetbar-widget-watchlist",
+  // confirmado en vivo via DevTools) — si ya esta ahi, no hace falta
+  // encontrar ni clickear ningun boton de toggle. Antes esto fallaba con
+  // "Watchlist button not found" incluso con el panel ya abierto, porque los
+  // selectores del boton ([data-name="base-watchlist-widget-button"],
+  // [aria-label*="Watchlist"]) no matchean el layout actual de TradingView.
   const panelState = await evaluate(`
     (function() {
+      var panel = document.querySelector('[data-name="widgetbar-widget-watchlist"]');
+      if (panel && panel.offsetParent !== null) return { opened: false };
+      // El boton real, confirmado en vivo via DevTools (2026-09): aria-label
+      // "Lista de seguimiento, detalles y noticias" (localizado en español,
+      // no "Watchlist" en ingles como asumia el selector viejo) y
+      // data-name="base" DENTRO de .widgetbar-tabs (ese data-name es
+      // generico afuera de ese contenedor, por eso va scopeado). El
+      // data-name="base" es la apuesta mas robusta porque no depende del
+      // idioma — Watchlist es siempre el primer tab del widgetbar en
+      // cualquier locale de TradingView.
       var btn = document.querySelector('[data-name="base-watchlist-widget-button"]')
-        || document.querySelector('[aria-label*="Watchlist"]');
+        || document.querySelector('.widgetbar-tabs [data-name="base"]')
+        || document.querySelector('[aria-label*="Watchlist"]')
+        || document.querySelector('[aria-label*="Lista de seguimiento"]');
       if (!btn) return { error: 'Watchlist button not found' };
       var isActive = btn.getAttribute('aria-pressed') === 'true'
         || btn.classList.toString().indexOf('Active') !== -1
