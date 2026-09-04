@@ -66,54 +66,59 @@ export async function add({ symbol }) {
   // Use keyboard shortcut to open symbol search in watchlist, type symbol, press Enter
   const c = await getClient();
 
-  // First ensure watchlist panel is open. Chequeamos primero si el panel ya
-  // esta visible en el DOM (data-name="widgetbar-widget-watchlist",
-  // confirmado en vivo via DevTools) — si ya esta ahi, no hace falta
-  // encontrar ni clickear ningun boton de toggle. Antes esto fallaba con
-  // "Watchlist button not found" incluso con el panel ya abierto, porque los
-  // selectores del boton ([data-name="base-watchlist-widget-button"],
-  // [aria-label*="Watchlist"]) no matchean el layout actual de TradingView.
-  const panelState = await evaluate(`
-    (function() {
-      var panel = document.querySelector('[data-name="widgetbar-widget-watchlist"]');
-      if (panel && panel.offsetParent !== null) return { opened: false };
-      // El boton real, confirmado en vivo via DevTools (2026-09): aria-label
-      // "Lista de seguimiento, detalles y noticias" (localizado en español,
-      // no "Watchlist" en ingles como asumia el selector viejo) y
-      // data-name="base" DENTRO de .widgetbar-tabs (ese data-name es
-      // generico afuera de ese contenedor, por eso va scopeado). El
-      // data-name="base" es la apuesta mas robusta porque no depende del
-      // idioma — Watchlist es siempre el primer tab del widgetbar en
-      // cualquier locale de TradingView.
-      var btn = document.querySelector('[data-name="base-watchlist-widget-button"]')
-        || document.querySelector('.widgetbar-tabs [data-name="base"]')
-        || document.querySelector('[aria-label*="Watchlist"]')
-        || document.querySelector('[aria-label*="Lista de seguimiento"]');
-      if (!btn) return { error: 'Watchlist button not found' };
-      var isActive = btn.getAttribute('aria-pressed') === 'true'
-        || btn.classList.toString().indexOf('Active') !== -1
-        || btn.classList.toString().indexOf('active') !== -1;
-      if (!isActive) { btn.click(); return { opened: true }; }
-      return { opened: false };
-    })()
-  `);
+  // Buscamos el boton "Agregar simbolo" DIRECTO primero, antes de tocar
+  // ningun toggle de panel. Confirmado en vivo via DevTools (2026-09):
+  // aria-label="Agregar símbolo", data-name="add-symbol-button" — este
+  // selector YA era correcto en el codigo original, el bug real estaba en
+  // el paso de "abrir el panel" de abajo: cuando el panel ya estaba
+  // abierto, ese paso lo detectaba como "cerrado" (heuristica de
+  // aria-pressed/clase "active" poco confiable con clases de CSS modules
+  // hasheadas) y le hacia click al toggle — CERRANDOLO sin querer. Buscar
+  // el boton real primero evita esa ambiguedad por completo: si ya esta
+  // visible, ni siquiera tocamos el toggle.
+  const ADD_SELECTORS = `
+    var selectors = [
+      '[data-name="add-symbol-button"]',
+      '[aria-label="Add symbol"]',
+      '[aria-label*="Add symbol"]',
+      '[aria-label="Agregar símbolo"]',
+      '[aria-label*="Agregar símbolo"]',
+      'button[class*="addSymbol"]',
+    ];
+    var _btnEncontrado = null;
+    for (var s = 0; s < selectors.length; s++) {
+      var btn = document.querySelector(selectors[s]);
+      if (btn && btn.offsetParent !== null) { _btnEncontrado = btn; break; }
+    }
+  `;
 
-  if (panelState?.error) throw new Error(panelState.error);
-  if (panelState?.opened) await new Promise(r => setTimeout(r, 500));
+  const yaVisible = await evaluate(`(function() { ${ADD_SELECTORS} return { found: !!_btnEncontrado }; })()`);
 
-  // Click the "Add symbol" button (various selectors)
+  if (!yaVisible?.found) {
+    // No estaba visible: recien aca intentamos abrir el panel con el
+    // toggle (data-name="base" del primer tab del widgetbar, ver comentario
+    // en la version anterior de este archivo para el detalle de por que ese
+    // selector es el mas robusto entre idiomas).
+    const panelState = await evaluate(`
+      (function() {
+        var btn = document.querySelector('[data-name="base-watchlist-widget-button"]')
+          || document.querySelector('.widgetbar-tabs [data-name="base"]')
+          || document.querySelector('[aria-label*="Watchlist"]')
+          || document.querySelector('[aria-label*="Lista de seguimiento"]');
+        if (!btn) return { error: 'Watchlist button not found' };
+        btn.click();
+        return { clicked: true };
+      })()
+    `);
+    if (panelState?.error) throw new Error(panelState.error);
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  // Click the "Add symbol" button (mismos selectores, ahora sí deberia estar visible)
   const addClicked = await evaluate(`
     (function() {
-      var selectors = [
-        '[data-name="add-symbol-button"]',
-        '[aria-label="Add symbol"]',
-        '[aria-label*="Add symbol"]',
-        'button[class*="addSymbol"]',
-      ];
-      for (var s = 0; s < selectors.length; s++) {
-        var btn = document.querySelector(selectors[s]);
-        if (btn && btn.offsetParent !== null) { btn.click(); return { found: true, selector: selectors[s] }; }
-      }
+      ${ADD_SELECTORS}
+      if (_btnEncontrado) { _btnEncontrado.click(); return { found: true }; }
       // Fallback: find + button in right panel
       var container = document.querySelector('[class*="layout__area--right"]');
       if (container) {
