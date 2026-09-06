@@ -2,9 +2,25 @@
  * Core drawing logic.
  */
 import { evaluate as _evaluate, getChartApi as _getChartApi, safeString, requireFinite } from '../connection.js';
+import { keyboard } from './ui.js';
 
 function _resolve(deps) {
   return { evaluate: deps?.evaluate || _evaluate, getChartApi: deps?.getChartApi || _getChartApi };
+}
+
+// Ctrl+S = atajo real de TradingView para guardar el layout del chart (no
+// solo el Pine Editor, ver pine_save). Best-effort a propósito: si falla,
+// no debe romper el resultado del dibujo en sí — solo se pierde el guardado
+// inmediato, el auto-save normal de TradingView igual corre después.
+// Motivación real: una recarga programada de la pestaña (mitigación del bug
+// de chart_set_symbol, ver wait.js) podía perder un dibujo recién hecho que
+// todavía no se había guardado — esto lo evita de raíz.
+async function _guardarLayout() {
+  try {
+    await keyboard({ key: 's', modifiers: ['ctrl'] });
+  } catch {
+    // best-effort, no propagar
+  }
 }
 
 export async function drawShape({ shape, point, point2, overrides: overridesRaw, text, _deps }) {
@@ -41,6 +57,7 @@ export async function drawShape({ shape, point, point2, overrides: overridesRaw,
   const after = await evaluate(`${apiPath}.getAllShapes().map(function(s) { return s.id; })`);
   const newId = (after || []).find(id => !(before || []).includes(id)) || null;
   const result = { entity_id: newId };
+  await _guardarLayout();
   return { success: true, shape, entity_id: result?.entity_id };
 }
 
@@ -106,6 +123,7 @@ export async function removeOne({ entity_id, _deps }) {
     })()
   `);
   if (result?.error) throw new Error(result.error);
+  await _guardarLayout();
   return { success: true, entity_id: result?.entity_id, removed: result?.removed, remaining_shapes: result?.remaining_shapes };
 }
 
@@ -113,5 +131,6 @@ export async function clearAll({ _deps } = {}) {
   const { evaluate, getChartApi } = _resolve(_deps);
   const apiPath = await getChartApi();
   await evaluate(`${apiPath}.removeAllShapes()`);
+  await _guardarLayout();
   return { success: true, action: 'all_shapes_removed' };
 }
