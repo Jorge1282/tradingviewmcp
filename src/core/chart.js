@@ -6,6 +6,25 @@ import { waitForChartReady as _waitForChartReady } from '../wait.js';
 import https from 'node:https';
 
 const CHART_API = 'window.TradingViewApi._activeChartWidgetWV.value()';
+const BARS_PATH = 'window.TradingViewApi._activeChartWidgetWV.value()._chartWidget.model().mainSeries().bars()';
+
+// "time:close" del último bar actual, o null si todavía no hay datos —
+// usado como foto de "antes" para que waitForChartReady pueda exigir un bar
+// REALMENTE distinto tras cambiar símbolo/temporalidad (ver wait.js).
+async function _leerFirmaUltimoBar(evaluate) {
+  return evaluate(`
+    (function() {
+      try {
+        var bars = ${BARS_PATH};
+        if (bars && typeof bars.lastIndex === 'function') {
+          var last = bars.valueAt(bars.lastIndex());
+          if (last) return last[0] + ':' + last[4];
+        }
+      } catch(e) {}
+      return null;
+    })()
+  `);
+}
 
 function _resolve(deps) {
   return {
@@ -39,7 +58,8 @@ export async function getState({ _deps } = {}) {
 }
 
 export async function setSymbol({ symbol, _deps }) {
-  const { evaluateAsync, waitForChartReady } = _resolve(_deps);
+  const { evaluate, evaluateAsync, waitForChartReady } = _resolve(_deps);
+  const antes = await _leerFirmaUltimoBar(evaluate);
   await evaluateAsync(`
     (function() {
       var chart = ${CHART_API};
@@ -49,20 +69,38 @@ export async function setSymbol({ symbol, _deps }) {
       });
     })()
   `);
-  const ready = await waitForChartReady(symbol);
-  return { success: true, symbol, chart_ready: ready };
+  // ready=false es una señal real de que el cambio no se confirmó (bug real
+  // encontrado en vivo: chart.setSymbol() puede devolver éxito sin que el
+  // feed de datos realmente cambie) — success ahora refleja eso en vez de
+  // decir siempre true, para que un caller que solo mire "success" no siga
+  // de largo asumiendo que el símbolo cambió cuando en realidad no.
+  //
+  // Timeout de 20s (no el default de 10s) — pero OJO, esto NO es un techo
+  // fijo confiable: medido en vivo (2026-09-05) que la re-suscripción real
+  // del feed se va haciendo más LENTA con cada cambio sucesivo de símbolo
+  // dentro de la misma sesión de Chrome (10s -> 17s -> 22s+ en cambios
+  // consecutivos, probablemente suscripciones viejas que no se liberan del
+  // todo) — ningún timeout fijo cubre esto para siempre. Un chart_ready:
+  // false NO significa necesariamente que el cambio falló: puede seguir
+  // completándose unos segundos después. El caller (ver instrucción en
+  // trader-ict.md) debe re-verificar con quote_get antes de asumir fallo, y
+  // si esto se repite seguido, recomendarle a Jorge recargar la pestaña de
+  // TradingView (F5) — eso resetea la lentitud acumulada de raíz.
+  const ready = await waitForChartReady(symbol, null, 20000, antes);
+  return { success: ready, symbol, chart_ready: ready };
 }
 
 export async function setTimeframe({ timeframe, _deps }) {
   const { evaluate, waitForChartReady } = _resolve(_deps);
+  const antes = await _leerFirmaUltimoBar(evaluate);
   await evaluate(`
     (function() {
       var chart = ${CHART_API};
       chart.setResolution(${safeString(timeframe)}, {});
     })()
   `);
-  const ready = await waitForChartReady(null, timeframe);
-  return { success: true, timeframe, chart_ready: ready };
+  const ready = await waitForChartReady(null, timeframe, undefined, antes);
+  return { success: ready, timeframe, chart_ready: ready };
 }
 
 export async function setType({ chart_type, _deps }) {
