@@ -438,8 +438,7 @@ export async function getPineBoxes({ study_filter, verbose } = {}) {
     const zones = [];
     const seen = {};
     const allBoxes = [];
-    const texts = [];
-    const seenText = {};
+    const textByBand = {}; // key: "high:low" (una fila/banda del ribbon) -> caja mas reciente (mayor x2) de esa banda
     for (const item of s.items) {
       const v = item.raw;
       const high = v.y1 != null && v.y2 != null ? Math.round(Math.max(v.y1, v.y2) * 100) / 100 : null;
@@ -447,9 +446,23 @@ export async function getPineBoxes({ study_filter, verbose } = {}) {
       const text = v.t || '';
       if (verbose) allBoxes.push({ id: item.id, high, low, x1: v.x1, x2: v.x2, borderColor: v.c, bgColor: v.bc, text });
       if (high != null && low != null) { const key = high + ':' + low; if (!seen[key]) { zones.push({ high, low }); seen[key] = true; } }
-      if (text) { const tkey = text + ':' + high + ':' + low; if (!seenText[tkey]) { texts.push({ text, high, low, x1: v.x1, x2: v.x2 }); seenText[tkey] = true; } }
+      if (text && high != null && low != null) {
+        // Muchas filas (ej. Q1-Q4 simples) reusan la misma banda de altura una
+        // y otra vez a lo largo del historial -- si dedupliceramos por
+        // texto+altura nos quedariamos con la PRIMERA vez que aparecio ese
+        // texto (la mas vieja), no la actual. Por eso agrupamos por banda
+        // (high:low, o sea "que fila del ribbon es") y nos quedamos con la
+        // caja de mayor x2 (bar_index mas alto = la mas reciente/actual).
+        const bandKey = high + ':' + low;
+        const x2 = v.x2 != null ? v.x2 : v.x1;
+        const existing = textByBand[bandKey];
+        if (!existing || (x2 != null && (existing.x2 == null || x2 > existing.x2))) {
+          textByBand[bandKey] = { text, high, low, x1: v.x1, x2: v.x2 };
+        }
+      }
     }
     zones.sort((a, b) => b.high - a.high);
+    const texts = Object.values(textByBand).sort((a, b) => b.high - a.high);
     const result = { name: s.name, total_boxes: s.count, zones };
     if (texts.length > 0) result.texts = texts;
     if (verbose) result.all_boxes = allBoxes;
