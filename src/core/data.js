@@ -438,15 +438,20 @@ export async function getPineBoxes({ study_filter, verbose } = {}) {
     const zones = [];
     const seen = {};
     const allBoxes = [];
+    const texts = [];
+    const seenText = {};
     for (const item of s.items) {
       const v = item.raw;
       const high = v.y1 != null && v.y2 != null ? Math.round(Math.max(v.y1, v.y2) * 100) / 100 : null;
       const low = v.y1 != null && v.y2 != null ? Math.round(Math.min(v.y1, v.y2) * 100) / 100 : null;
-      if (verbose) allBoxes.push({ id: item.id, high, low, x1: v.x1, x2: v.x2, borderColor: v.c, bgColor: v.bc });
+      const text = v.t || '';
+      if (verbose) allBoxes.push({ id: item.id, high, low, x1: v.x1, x2: v.x2, borderColor: v.c, bgColor: v.bc, text });
       if (high != null && low != null) { const key = high + ':' + low; if (!seen[key]) { zones.push({ high, low }); seen[key] = true; } }
+      if (text) { const tkey = text + ':' + high + ':' + low; if (!seenText[tkey]) { texts.push({ text, high, low, x1: v.x1, x2: v.x2 }); seenText[tkey] = true; } }
     }
     zones.sort((a, b) => b.high - a.high);
     const result = { name: s.name, total_boxes: s.count, zones };
+    if (texts.length > 0) result.texts = texts;
     if (verbose) result.all_boxes = allBoxes;
     return result;
   });
