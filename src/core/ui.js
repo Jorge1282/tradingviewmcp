@@ -59,8 +59,8 @@ export async function openPanel({ panel, action }) {
     return { success: true, panel, action, was_open: result?.was_open ?? false, performed: result?.performed ?? 'unknown' };
   } else {
     const selectorMap = {
-      'watchlist': { dataName: 'base-watchlist-widget-button', ariaLabel: 'Watchlist' },
-      'alerts': { dataName: 'alerts-button', ariaLabel: 'Alerts' },
+      'watchlist': { dataName: 'base-watchlist-widget-button', ariaLabel: 'Lista de seguimiento, detalles y noticias' },
+      'alerts': { dataName: 'alerts', ariaLabel: 'Alertas' },
       'trading': { dataName: 'trading-button', ariaLabel: 'Trading Panel' },
     };
     const sel = selectorMap[panel];
