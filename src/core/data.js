@@ -246,13 +246,22 @@ export async function getQuote({ symbol } = {}) {
   const data = await evaluate(`
     (function() {
       var api = ${CHART_API};
-      var sym = ${safeString(symbol || '')};
-      if (!sym) { try { sym = api.symbol(); } catch(e) {} }
-      if (!sym) { try { sym = api.symbolExt().symbol; } catch(e) {} }
+      var symPedido = ${safeString(symbol || '')};
+      var symActivo = '';
+      try { symActivo = api.symbol(); } catch(e) {}
+      if (!symActivo) { try { symActivo = api.symbolExt().symbol; } catch(e) {} }
+      var sym = symPedido || symActivo;
       var ext = {};
       try { ext = api.symbolExt() || {}; } catch(e) {}
       var bars = ${BARS_PATH};
-      var quote = { symbol: sym };
+      // FIX quote_get 2026-09-20: verificar que el simbolo pedido coincida
+      // con el chart activo. Antes, si pedias GBPUSD con el chart en EURUSD,
+      // devolvia symbol:'GBPUSD' (eco del pedido) pero los numeros del chart
+      // activo — el agente no podia detectarlo sin mirar 'description'.
+      if (symPedido && symActivo && symPedido.toUpperCase() !== symActivo.toUpperCase()) {
+        return { _mismatch: true, symbol_pedido: symPedido, symbol_activo: symActivo };
+      }
+      var quote = { symbol: sym, symbol_activo: symActivo };
       if (bars && typeof bars.lastIndex === 'function') {
         var last = bars.valueAt(bars.lastIndex());
         if (last) { quote.time = last[0]; quote.open = last[1]; quote.high = last[2]; quote.low = last[3]; quote.close = last[4]; quote.last = last[4]; quote.volume = last[5] || 0; }
@@ -273,6 +282,9 @@ export async function getQuote({ symbol } = {}) {
       return quote;
     })()
   `);
+  if (data && data._mismatch) {
+    throw new Error(`quote_get: el chart activo es ${data.symbol_activo}, pero pediste ${data.symbol_pedido}. quote_get lee el chart en pantalla, no cambia de simbolo — usa chart_set_symbol primero y verifica con chart_get_state.`);
+  }
   if (!data || (!data.last && !data.close)) throw new Error('Could not retrieve quote. The chart may still be loading.');
   return { success: true, ...data };
 }
