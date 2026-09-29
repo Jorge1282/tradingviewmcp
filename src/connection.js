@@ -50,8 +50,16 @@ export function requireFinite(value, name) {
 export async function getClient() {
   if (client) {
     try {
-      // Quick liveness check
-      await client.Runtime.evaluate({ expression: '1', returnByValue: true });
+      // Quick liveness check — CON timeout: un renderer congelado (ver
+      // activarTarget mas abajo) deja este evaluate colgado para siempre sin
+      // el timeout, y el que termina "matando" todo es el timeout de 30s del
+      // lado Python (orquestador._ejecutar_cli_tv), sin darle a este proceso
+      // ninguna chance de reconectar/reactivar la pestana (bug real,
+      // 28/9/2026: "No pude leer el estado del chart: timeout tras 30s").
+      await Promise.race([
+        client.Runtime.evaluate({ expression: '1', returnByValue: true }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('liveness check colgada')), 4000)),
+      ]);
       return client;
     } catch {
       client = null;
@@ -59,6 +67,25 @@ export async function getClient() {
     }
   }
   return connect();
+}
+
+// Esta PC tiene 4GB de RAM: Chrome congela el renderer de una pestana que no
+// esta en primer plano para ahorrar memoria/CPU, y un renderer congelado deja
+// Runtime.evaluate colgado indefinidamente (bug real, 28/9/2026: "No pude leer
+// el estado del chart: timeout tras 30s" — confirmado en vivo, activar la
+// pestana la desbloquea al instante). Activarla ANTES de conectar evita el
+// cuelgue sin tener que tocar flags de Chrome ni reiniciarlo. Best-effort: si
+// falla (Chrome viejo, target ya cerrado), seguimos igual con el intento de
+// conexion normal.
+async function activarTarget(targetId) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3000);
+    await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/activate/${targetId}`, { signal: ctrl.signal });
+    clearTimeout(t);
+  } catch {
+    // best-effort
+  }
 }
 
 export async function connect() {
@@ -69,16 +96,34 @@ export async function connect() {
       if (!target) {
         throw new Error('No TradingView chart target found. Is TradingView open with a chart?');
       }
+      // Activar (robar el foco) SOLO despues de un primer intento fallido, no
+      // siempre — hacerlo siempre interfiere con deepseek-mcp/gemini-mcp, que
+      // tambien necesitan su propia pestana al frente para responder rapido
+      // (bug real, 28/9/2026: activar TradingView en cada llamada del CLI le
+      // sacaba el foco a DeepSeek a mitad de una respuesta y esta tiraba
+      // "timeout tras 60s"). El intento 0 va "en silencio"; si se cuelga o
+      // falla (renderer congelado), recien ahi activamos y reintentamos.
+      if (attempt > 0) {
+        await activarTarget(target.id);
+      }
       targetInfo = target;
-      client = await CDP({ host: CDP_HOST, port: CDP_PORT, target: target.id });
-
-      // Enable required domains
-      await client.Runtime.enable();
-      await client.Page.enable();
-      await client.DOM.enable();
-
+      const intentoConexion = (async () => {
+        const c = await CDP({ host: CDP_HOST, port: CDP_PORT, target: target.id });
+        await c.Runtime.enable();
+        await c.Page.enable();
+        await c.DOM.enable();
+        // Confirma que el renderer responde de verdad, no solo que el
+        // websocket de CDP conecto (eso solo, medido en vivo, no alcanza).
+        await c.Runtime.evaluate({ expression: '1', returnByValue: true });
+        return c;
+      })();
+      client = await Promise.race([
+        intentoConexion,
+        new Promise((_, rej) => setTimeout(() => rej(new Error('conexion/enable colgada (renderer no responde)')), 6000)),
+      ]);
       return client;
     } catch (err) {
+      client = null;
       lastError = err;
       const delay = Math.min(BASE_DELAY * Math.pow(2, attempt), 30000);
       await new Promise(r => setTimeout(r, delay));
