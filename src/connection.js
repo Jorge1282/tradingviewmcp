@@ -88,6 +88,47 @@ async function activarTarget(targetId) {
   }
 }
 
+// TradingView solo permite UNA sesion activa por cuenta (normativa de datos de
+// mercado): si Jorge usa la MISMA cuenta en otra PC/navegador, esta pestana se
+// desloguea con un modal "Sesion desconectada" y un boton "Conectar" que
+// recupera la sesion (y de paso desloguea a la otra PC — es el mismo
+// mecanismo, solo que ahora en sentido contrario). Confirmado en vivo
+// (28/9/2026, captura de Jorge). A pedido explicito de Jorge: esta PC tiene
+// que reconectarse SOLA cada vez que se use el chart/captura, sin esperar que
+// alguien clickee "Conectar" a mano.
+async function reconectarSiDesconectado(c) {
+  try {
+    const r = await Promise.race([
+      c.Runtime.evaluate({
+        expression: `
+          (function() {
+            var hit = [...document.querySelectorAll('*')].find(function(el) {
+              return el.children.length === 0 && el.textContent && el.textContent.trim() === 'Sesión desconectada';
+            });
+            if (!hit) return { desconectado: false };
+            var boton = [...document.querySelectorAll('button, [role="button"]')]
+              .find(function(b) { return b.offsetParent && b.textContent.trim() === 'Conectar'; });
+            if (!boton) return { desconectado: true, reconectado: false };
+            boton.click();
+            return { desconectado: true, reconectado: true };
+          })()
+        `,
+        returnByValue: true,
+      }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('chequeo de sesion colgado')), 4000)),
+    ]);
+    const estado = r.result?.value || { desconectado: false };
+    if (estado.desconectado && estado.reconectado) {
+      // Dar tiempo a que el modal cierre y el feed real vuelva a suscribirse
+      // antes de que el caller siga con lecturas/comandos sobre el chart.
+      await new Promise(res => setTimeout(res, 2000));
+    }
+    return estado;
+  } catch {
+    return { desconectado: false };
+  }
+}
+
 export async function connect() {
   let lastError;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -115,11 +156,15 @@ export async function connect() {
         // Confirma que el renderer responde de verdad, no solo que el
         // websocket de CDP conecto (eso solo, medido en vivo, no alcanza).
         await c.Runtime.evaluate({ expression: '1', returnByValue: true });
+        await reconectarSiDesconectado(c);
         return c;
       })();
+      // 12s en vez de 6s: reconectarSiDesconectado puede sumar hasta ~6s
+      // propios (chequeo + espera tras click en "Conectar") arriba del
+      // tiempo normal de conexion.
       client = await Promise.race([
         intentoConexion,
-        new Promise((_, rej) => setTimeout(() => rej(new Error('conexion/enable colgada (renderer no responde)')), 6000)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('conexion/enable colgada (renderer no responde)')), 12000)),
       ]);
       return client;
     } catch (err) {
